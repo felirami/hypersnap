@@ -6232,11 +6232,15 @@ pub const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// Wall-clock cap per request once headers are done: body collection plus
 /// handling. The header timeout alone leaves clients that drip-feed or never
 /// finish a body holding one of the connection slots forever; when all slots
-/// are occupied the accept loop drops connections for everyone. Generous
-/// because authenticated admin sends fan out notification campaigns
-/// synchronously and may legitimately take minutes; the anti-slowloris
-/// value comes from bounding lifetime at all, not from a tight bound.
-pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// are occupied the accept loop drops connections for everyone. 30s covers
+/// every public endpoint with ample headroom.
+pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cap for the authenticated frame-admin endpoints
+/// (`/v2/farcaster/frame/…`), whose notification campaign sends fan out
+/// synchronously and can legitimately take minutes. Long only because the
+/// x-api-key gate keeps the public slowloris surface on the tighter cap.
+pub const HTTP_ADMIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Builds the HTTP/1 connection handler shared by the production accept loop
 /// in `src/main.rs` and the test server below.
@@ -6261,9 +6265,12 @@ where
             .serve_connection(
                 io,
                 service_fn(|r| async {
-                    match tokio::time::timeout(HTTP_REQUEST_TIMEOUT, router.handle(r, &config))
-                        .await
-                    {
+                    let request_timeout = if r.uri().path().starts_with("/v2/farcaster/frame/") {
+                        HTTP_ADMIN_REQUEST_TIMEOUT
+                    } else {
+                        HTTP_REQUEST_TIMEOUT
+                    };
+                    match tokio::time::timeout(request_timeout, router.handle(r, &config)).await {
                         Ok(res) => res,
                         Err(_) => Ok(Response::builder()
                             .status(StatusCode::REQUEST_TIMEOUT)
