@@ -6232,9 +6232,11 @@ pub const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// Wall-clock cap per request once headers are done: body collection plus
 /// handling. The header timeout alone leaves clients that drip-feed or never
 /// finish a body holding one of the connection slots forever; when all slots
-/// are occupied the accept loop drops connections for everyone. All v1/v2
-/// endpoints are short request/response calls, so 30s is generous.
-pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// are occupied the accept loop drops connections for everyone. Generous
+/// because authenticated admin sends fan out notification campaigns
+/// synchronously and may legitimately take minutes; the anti-slowloris
+/// value comes from bounding lifetime at all, not from a tight bound.
+pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Builds the HTTP/1 connection handler shared by the production accept loop
 /// in `src/main.rs` and the test server below.
