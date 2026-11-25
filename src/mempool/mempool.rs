@@ -101,8 +101,21 @@ impl RateLimits {
     fn get_rate_limiter_for_fid(&mut self, fid: u64) -> Option<Arc<DirectRateLimiter>> {
         self.rate_limits_by_fid.optionally_get_with(fid, || {
             let shard_id = self.message_router.route_fid(fid, self.num_shards);
-            let stores = self.shard_stores.get(&shard_id).unwrap();
-            let storage_limits = stores.get_storage_limits(fid).unwrap();
+            // Fail closed (no rate limiter, message rejected) rather than panic:
+            // this runs on the mempool task and a panic here takes the node down.
+            let stores = self.shard_stores.get(&shard_id)?;
+            let storage_limits = match stores.get_storage_limits(fid) {
+                Ok(limits) => limits,
+                Err(e) => {
+                    warn!(
+                        fid = fid,
+                        shard_id = shard_id,
+                        "Failed to read storage limits: {}",
+                        e
+                    );
+                    return None;
+                }
+            };
             let storage_allowance: u32 = storage_limits
                 .limits
                 .iter()
@@ -234,8 +247,21 @@ impl LiveAtRateLimits {
         }
         let rate_limiter = self.rate_limits_by_fid.optionally_get_with(fid, || {
             let shard_id = self.message_router.route_fid(fid, self.num_shards);
-            let stores = self.shard_stores.get(&shard_id).unwrap();
-            let storage_limits = stores.get_storage_limits(fid).unwrap();
+            // Fail closed (no rate limiter, message rejected) rather than panic:
+            // this runs on the mempool task and a panic here takes the node down.
+            let stores = self.shard_stores.get(&shard_id)?;
+            let storage_limits = match stores.get_storage_limits(fid) {
+                Ok(limits) => limits,
+                Err(e) => {
+                    warn!(
+                        fid = fid,
+                        shard_id = shard_id,
+                        "Failed to read storage limits: {}",
+                        e
+                    );
+                    return None;
+                }
+            };
             if storage_limits.units == 0 {
                 None
             } else {

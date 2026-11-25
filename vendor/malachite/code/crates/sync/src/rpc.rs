@@ -108,7 +108,16 @@ where
         return Err(io::Error::new(io::ErrorKind::InvalidData, "data too large"));
     }
 
-    let mut data = vec![0u8; len];
-    src.read_exact(&mut data).await?;
+    // Grow the buffer with bytes actually received instead of reserving the
+    // peer-declared length up front. `vec![0u8; len]` lets a peer pin up to
+    // `max_len` of memory per in-flight request without sending anything.
+    let mut data = Vec::new();
+    src.take(len as u64).read_to_end(&mut data).await?;
+    if data.len() != len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "stream ended before the declared length",
+        ));
+    }
     Ok(Bytes::from(data))
 }

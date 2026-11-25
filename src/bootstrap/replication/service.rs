@@ -1129,9 +1129,26 @@ impl ReplicatorBootstrap {
         let mut trie = merkle_trie::MerkleTrie::new()?;
         trie.initialize(&db)?;
 
-        // Get the trie root and see if it matches
-        let expected_shard_root = metadata.shard_chunk.unwrap().header.unwrap().shard_root;
-        let trie_root = trie.root_hash().unwrap();
+        // Get the trie root and see if it matches.
+        // The metadata comes from a remote bootstrap peer; malformed metadata
+        // must be a clean error, not a panic in the syncing node.
+        let expected_shard_root = metadata
+            .shard_chunk
+            .as_ref()
+            .and_then(|chunk| chunk.header.as_ref())
+            .map(|header| header.shard_root.clone())
+            .ok_or_else(|| {
+                BootstrapError::GenericError(format!(
+                    "Snapshot metadata for shard {} is missing shard chunk header",
+                    shard_id
+                ))
+            })?;
+        let trie_root = trie.root_hash().map_err(|e| {
+            BootstrapError::GenericError(format!(
+                "Failed to compute trie root for shard {}: {}",
+                shard_id, e
+            ))
+        })?;
 
         if expected_shard_root == trie_root {
             info!(

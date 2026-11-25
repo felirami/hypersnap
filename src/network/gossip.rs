@@ -52,6 +52,11 @@ const DEFAULT_GOSSIP_HOST: &str = "127.0.0.1";
 pub const SHUTDOWN_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_GOSSIP_MESSAGE_SIZE: usize = 1024 * 1024 * 10; // 10 mb
 
+// Upper bound for one consensus-sync response: one decided value plus its
+// commit certificate. Generous headroom over the gossip cap above; the
+// malachite default (512 MiB) is a per-peer memory-exhaustion vector.
+const MAX_SYNC_RESPONSE_SIZE: usize = 1024 * 1024 * 64; // 64 mb
+
 pub(crate) const CONSENSUS_TOPIC: &str = snapchain_proto::topics::CONSENSUS;
 pub(crate) const MEMPOOL_TOPIC: &str = snapchain_proto::topics::MEMPOOL;
 const DECIDED_VALUES: &str = snapchain_proto::topics::DECIDED_VALUES;
@@ -479,7 +484,13 @@ impl SnapchainGossip {
                 }
 
                 let rpc = sync::Behaviour::new(
-                    sync::Config::default().with_request_timeout(Duration::from_secs(5)),
+                    sync::Config::default()
+                        .with_request_timeout(Duration::from_secs(5))
+                        // A sync response carries one decided value plus its commit
+                        // certificate; consensus values fit in the 10 MiB gossip cap.
+                        // The malachite default of 512 MiB lets any peer we sync from
+                        // pin hundreds of MiB of memory per in-flight request.
+                        .with_max_response_size(MAX_SYNC_RESPONSE_SIZE),
                 );
 
                 let diagnostics = diagnostics::Behaviour::new(
