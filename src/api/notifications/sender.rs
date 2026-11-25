@@ -285,6 +285,7 @@ async fn deliver_batch(
     let pinned_client = match crate::api::ssrf::resolve_safe_ips(&batch.url, ssrf_policy).await {
         Ok((host, addrs)) => match reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .resolve_to_addrs(&host, &addrs)
             .build()
         {

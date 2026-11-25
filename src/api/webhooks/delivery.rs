@@ -370,8 +370,11 @@ fn build_http_client(_config: &WebhooksConfig) -> Result<reqwest::Client, reqwes
     //
     // Redirects are never followed: a registered URL that passes the SSRF
     // check could otherwise 302 to an internal address, bypassing it.
+    // System proxies are disabled: a proxy would receive the destination
+    // host itself, bypassing the DNS pinning done at delivery time.
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
 }
 
@@ -384,6 +387,7 @@ fn build_pinned_client(
 ) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .resolve_to_addrs(host, addrs)
         .build()
 }
