@@ -6229,6 +6229,13 @@ pub const MAX_CONCURRENT_HTTP_CONNECTIONS: usize = 2048;
 /// timer on the connection builder to take effect.
 pub const HTTP_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Wall-clock cap per request once headers are done: body collection plus
+/// handling. The header timeout alone leaves clients that drip-feed or never
+/// finish a body holding one of the connection slots forever; when all slots
+/// are occupied the accept loop drops connections for everyone. All v1/v2
+/// endpoints are short request/response calls, so 30s is generous.
+pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Builds the HTTP/1 connection handler shared by the production accept loop
 /// in `src/main.rs` and the test server below.
 pub fn serve_http_connection<S>(
@@ -6249,7 +6256,20 @@ where
         if let Err(err) = http1::Builder::new()
             .timer(hyper_util::rt::TokioTimer::new())
             .header_read_timeout(HTTP_HEADER_READ_TIMEOUT)
-            .serve_connection(io, service_fn(|r| router.handle(r, &config)))
+            .serve_connection(
+                io,
+                service_fn(|r| async {
+                    match tokio::time::timeout(HTTP_REQUEST_TIMEOUT, router.handle(r, &config))
+                        .await
+                    {
+                        Ok(res) => res,
+                        Err(_) => Ok(Response::builder()
+                            .status(StatusCode::REQUEST_TIMEOUT)
+                            .body(Full::new(Bytes::from("request timeout")).boxed())
+                            .unwrap()),
+                    }
+                }),
+            )
             .await
         {
             error!("Error serving connection: {}", err);
