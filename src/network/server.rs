@@ -84,6 +84,14 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info, warn};
 
 pub const MEMPOOL_ADD_REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Concurrent L1 validations (ENS/verifications) allowed across the RPC
+/// submit path; mirrors the gossip gate's `max_concurrent_checks`.
+pub const MAX_CONCURRENT_L1_VALIDATIONS: usize = 32;
+
+/// Per-message cap on how long an RPC-path L1 validation may run; mirrors
+/// the gossip gate's `check_timeout`.
+pub const L1_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Threads used to probe FIDs in parallel when resolving a cast by hash alone.
@@ -656,6 +664,11 @@ pub struct MyHubService {
     // the background fname connector has polled the corresponding transfer. None
     // disables on-demand recovery (e.g. when fnames are configured off).
     fname_lookup: Option<Arc<dyn FnameTransferLookup>>,
+    /// Bounds concurrent L1 (ENS/verifications) validations on the RPC
+    /// submit path. The gossip path has the full L1 gate; without a cap
+    /// here, RPC submits are an unauthenticated cost-amplification vector
+    /// against the node's upstream L1 RPC quota.
+    l1_validation_permits: Arc<tokio::sync::Semaphore>,
 }
 
 /// Opaque cursor for notifications pagination.
@@ -783,6 +796,9 @@ impl MyHubService {
             id_registry_cache,
             mesh_cache,
             fname_lookup,
+            l1_validation_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_L1_VALIDATIONS,
+            )),
         };
         service
     }
@@ -967,7 +983,35 @@ impl MyHubService {
     ) -> Result<proto::Message, HubError> {
         // We're doing the ens and address validations here for now because we don't want L1 interactions to be on the consensus critical path.
         // Eventually this will move to the fname server.
-        self.l1_validator.validate_message(&message).await?;
+        // Bounded in concurrency and time so RPC submits cannot pile up
+        // unbounded upstream L1 RPC work (the gossip path has the L1 gate;
+        // this is the equivalent guard for the RPC path).
+        let _permit = match timeout(
+            L1_VALIDATION_TIMEOUT,
+            self.l1_validation_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Ok(Ok(permit)) => permit,
+            _ => {
+                self.statsd_client
+                    .count("rpc.l1_validation_overload", 1, vec![]);
+                return Err(HubError::unavailable("L1 validation busy"));
+            }
+        };
+        match timeout(
+            L1_VALIDATION_TIMEOUT,
+            self.l1_validator.validate_message(&message),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                self.statsd_client
+                    .count("rpc.l1_validation_timeout", 1, vec![]);
+                return Err(HubError::unavailable("L1 validation timed out"));
+            }
+        }
 
         let (tx, rx) = oneshot::channel();
 
