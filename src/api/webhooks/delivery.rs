@@ -622,10 +622,12 @@ async fn deliver_once(
     let status = response.status();
     if status.is_success() {
         Ok(())
-    } else if status.is_client_error() {
+    } else if status.is_client_error() || status.is_redirection() {
+        // Redirects are never followed (they would bypass the SSRF
+        // re-check), so a 3xx cannot succeed on retry either — count it
+        // as permanent instead of re-posting the event.
         Err(DeliveryError::PermanentClient(status.as_u16()))
     } else {
-        // 3xx is unusual for POST endpoints — treat as transient.
         Err(DeliveryError::TransientServer(status.as_u16()))
     }
 }
