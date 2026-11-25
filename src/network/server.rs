@@ -118,6 +118,11 @@ pub const L1_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Live `subscribe` streams allowed across the whole server; each holds a
 /// forwarding task, a 100-event channel and possibly a replay scan.
 pub const MAX_CONCURRENT_SUBSCRIPTIONS: usize = 512;
+
+/// Maximum messages in one `submit_bulk_messages` call. Sequential mempool
+/// admissions make oversized batches both slow (risking cancellation by the
+/// HTTP request deadline) and a cost-amplification vector.
+pub const MAX_BULK_MESSAGES: usize = 1000;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Threads used to probe FIDs in parallel when resolving a cast by hash alone.
@@ -1888,6 +1893,16 @@ impl HubService for MyHubService {
 
         let mut messages = request.into_inner().messages;
         let num_messages = messages.len();
+        // Cap batch size so the worst-case processing time fits inside the
+        // HTTP request deadline: admissions are sequential and each can wait
+        // on the mempool, so unbounded batches would be cancelled mid-way
+        // (losing per-message results) and are a cost-amplification vector.
+        if num_messages > MAX_BULK_MESSAGES {
+            return Err(Status::invalid_argument(format!(
+                "too many messages in bulk request ({} > {})",
+                num_messages, MAX_BULK_MESSAGES
+            )));
+        }
         debug!(
             "Received call to [submit_bulk_messages] RPC with {} messages",
             num_messages
