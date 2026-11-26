@@ -187,7 +187,7 @@ pub fn authenticate_request<T>(
             return Err(Status::unauthenticated("invalid authorization header"));
         }
         if let Some(password) = allowed_users.get(parts[0]) {
-            if password == parts[1] {
+            if crate::utils::crypto::constant_time_eq(password.as_bytes(), parts[1].as_bytes()) {
                 Ok(())
             } else {
                 Err(Status::unauthenticated("invalid username or password"))
